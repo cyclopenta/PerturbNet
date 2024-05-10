@@ -1,6 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 import os
+import sys
 import random
 import numpy as np
 import pandas as pd
@@ -8,6 +9,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import scvi
+import scanpy as sc
 
 from anndata import AnnData
 from scipy import linalg
@@ -21,8 +23,59 @@ from scipy import stats, sparse
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import KFold
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_curve, auc, r2_score
 from sklearn.preprocessing import label_binarize
+from math import sqrt
+from scipy.stats import gaussian_kde
+
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit import DataStructs
+import argparse
+import pickle
+from tqdm import tqdm
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit import DataStructs
+from rdkit.Chem import Draw
+from rdkit.Chem import QED
+
+
+
+
+
+def bhatta_coef(X1, X2):
+	#Calculate the Bhattacharyya distance between X1 and X2. X1 and X2 should be 1D numpy arrays representing the same
+	# feature in two separate classes. 
+
+	def get_density(x, cov_factor=0.1):
+		#Produces a continuous density function for the data in 'x'. Some benefit may be gained from adjusting the cov_factor.
+		density = gaussian_kde(x)
+		density.covariance_factor = lambda:cov_factor
+		density._compute_covariance()
+		return density
+
+	#Combine X1 and X2, we'll use it later:
+	cX = np.concatenate((X1,X2))
+
+	###Use a continuous density function to calculate the coefficient (This is the most consistent, but also slightly slow):
+	N_STEPS = 200
+	#Get density functions:
+	d1 = get_density(X1)
+	d2 = get_density(X2)
+	#Calc coeff:
+	xs = np.linspace(min(cX),max(cX),N_STEPS)
+	bht = 0
+	for x in xs:
+		p1 = d1(x)
+		p2 = d2(x)
+		bht += sqrt(p1*p2)*(max(cX)-min(cX))/N_STEPS
+	return bht
+
+
+#def amino_acid_to_variants(seq,protein = ["gata1","tp53","kras])
+
+
 
 
 class NormalizedRSquare:
@@ -39,7 +92,7 @@ class NormalizedRSquare:
 		self.col_mu = usedata.mean(axis=0)
 		self.col_std = usedata.std(axis=0)
 
-	def calculate_r_square(self, real_data, fake_data):
+	def calculate_r_square_old(self, real_data, fake_data):
 		real_data_norm = real_data.copy()
 		fake_data_norm = fake_data.copy()
 
@@ -91,7 +144,7 @@ class NormalizedRevisionRSquare:
 		self.col_mu = usedata.mean(axis = 0)
 		self.col_std = usedata.std(axis = 0)
 
-	def calculate_r_square(self, real_data, fake_data, max_value = 10):
+	def calculate_r_square_old(self, real_data, fake_data, max_value = 10):
 		real_data_norm = real_data.copy()
 		fake_data_norm = fake_data.copy()
 
@@ -111,6 +164,122 @@ class NormalizedRevisionRSquare:
 		m, b, r_value, p_value, std_err = stats.linregress(x, y)
 
 		return r_value ** 2, real_data_norm, fake_data_norm
+    
+	def calculate_pearson(self, real_data, fake_data):
+		real_data_norm = real_data.copy()
+		real_data_norm_sum = real_data_norm.sum(axis = 1) 
+		real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+        
+		fake_data_norm = fake_data.copy()
+		fake_data_norm_sum = fake_data_norm.sum(axis = 1) 
+		fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+        
+		real_data_norm = real_data_norm / real_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		fake_data_norm = fake_data_norm / fake_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+		x = np.average(real_data_norm, axis = 0)
+		y = np.average(fake_data_norm, axis = 0)
+		if (np.isnan(x).any() or np.isnan(y).any()):
+			return 1.5
+		else:
+			m, b, r_value, p_value, std_err = stats.linregress(x, y)
+
+			return r_value
+
+	def calculate_r_square_var(self, real_data, fake_data):
+		x = np.var(fake_data, axis = 0)
+		y = np.var(real_data, axis = 0)
+		m, b, r_value, p_value, std_err = stats.linregress(x, y)
+
+		return r_value ** 2
+
+	def calculate_r_square(self, real_data, fake_data):
+		real_data_norm = real_data.copy()
+		real_data_norm_sum = real_data_norm.sum(axis = 1) 
+		real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+        
+		fake_data_norm = fake_data.copy()
+		fake_data_norm_sum = fake_data_norm.sum(axis = 1) 
+		fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+        
+		real_data_norm = real_data_norm / real_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		fake_data_norm = fake_data_norm / fake_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+		x = np.average(real_data_norm, axis = 0)
+		y = np.average(fake_data_norm, axis = 0)
+		if (np.isnan(x).any() or np.isnan(y).any()):
+			return 1.5, 1.5 , 1.5
+		else:            
+			r2_value = r2_score(x, y)
+
+			return r2_value, real_data_norm , fake_data_norm  
+    
+	def calculate_r_square_real_total(self, real_data, fake_data):
+		real_data_norm = real_data.copy()
+		real_data_norm_sum = real_data_norm.sum(axis = 1) 
+		real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+        
+		fake_data_norm = fake_data.copy()
+		fake_data_norm_sum = fake_data_norm.sum(axis = 1) 
+		fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+        
+		real_data_norm = real_data_norm / real_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		fake_data_norm = fake_data_norm / fake_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+		# important to make sure x is y_true and y is y_pred since it will affect which y_bar to be used
+		x = np.average(real_data_norm, axis = 0)
+		y = np.average(fake_data_norm, axis = 0)
+		r2_value = r2_score(x, y)
+
+		return r2_value, real_data_norm , fake_data_norm 
+    
+	def calculate_Hellinger(self, real_data, fake_data):
+		real_data_norm = real_data.copy()
+		real_data_norm_sum = real_data_norm.sum(axis = 1) 
+		real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+        
+		fake_data_norm = fake_data.copy()
+		fake_data_norm_sum = fake_data_norm.sum(axis = 1) 
+		fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+        
+		real_data_norm = real_data_norm / real_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		fake_data_norm = fake_data_norm / fake_data_norm.sum(axis = 1)[:, None] * self.targetSize
+		real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+		# important to make sure x is y_true and y is y_pred since it will affect which y_bar to be used
+		x = np.average(real_data_norm, axis = 0)
+		y = np.average(fake_data_norm, axis = 0)
+		hellinger_distance = sqrt(1 - bhatta_coef(x,y))
+
+		return hellinger_distance 
+    
+	def calculate_Hellinger_by_gene(self,real_data,fake_data):
+		assert (real_data.shape[1]==fake_data.shape[1])
+		real_data_sum = real_data.sum(axis = 1) 
+		real_data = real_data[real_data_sum != 0,:]
+		fake_data_sum = fake_data.sum(axis = 1) 
+		fake_data = fake_data[fake_data_sum != 0,:]
+        
+
+ 
+		real_data_norm = real_data / real_data.sum(axis=1, keepdims=True) * self.targetSize
+
+		fake_data_norm = fake_data / fake_data.sum(axis=1, keepdims=True) * self.targetSize     
+		real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+		fake_data_var = np.var(real_data_norm,axis = 0)
+		real_data_var = np.var(fake_data_norm,axis = 0)
+		non_zero_var_col = np.where((real_data_var > 1e-6) & (fake_data_var > 1e-6))[0]     
+		real_data_norm = real_data_norm[:,non_zero_var_col]
+		fake_data_norm = fake_data_norm[:,non_zero_var_col]      
+		sum_dis = 0
+		for i in range(real_data_norm.shape[1]):
+			real_sub = real_data_norm[:,i]
+			fake_sub = fake_data_norm[:,i]
+			bh_coef = bhatta_coef(real_sub ,fake_sub)
+			if bh_coef>=1:
+				continue     
+			sum_dis += sqrt(1 - bh_coef)
+         
+		return(sum_dis/real_data.shape[1])
 
 
 class NormalizedRevisionRSquareLoad:
@@ -124,8 +293,7 @@ class NormalizedRevisionRSquareLoad:
 		self.col_mu = col_mu
 		self.col_std = col_std
 	
-	def calculate_r_square(self, real_data, fake_data, max_value = 10):
-
+	def calculate_r_square_old(self, real_data, fake_data, max_value = 10):
 		real_data_norm = real_data.copy()
 		fake_data_norm = fake_data.copy()
 
@@ -143,8 +311,6 @@ class NormalizedRevisionRSquareLoad:
 		x = np.average(fake_data_norm, axis = 0)
 		y = np.average(real_data_norm, axis = 0)
 		m, b, r_value, p_value, std_err = stats.linregress(x, y)
-
-		return r_value ** 2, real_data_norm, fake_data_norm
 
 class NormalizedRevisionRSquareVar:
 	"""
@@ -238,11 +404,33 @@ class fidscore:
 		return fid_value, image_error
 
 	def calculate_r_square(self, real_data, fake_data):
+		real_data_sum = real_data.sum(axis = 1) 
+		real_data = real_data[real_data_sum != 0,:]
+		fake_data_sum = fake_data.sum(axis = 1) 
+		fake_data = fake_data[fake_data_sum != 0,:]
+		x = np.average(real_data, axis = 0)
+		y = np.average(fake_data, axis = 0)
+		r2_value = r2_score(x, y)
+
+
+		return r2_value
+
+	def calculate_Hellinger(self, real_data, fake_data):
+		x = np.average(real_data, axis = 0)
+		y = np.average(fake_data, axis = 0)
+		hellinger_distance = sqrt(1 - bhatta_coef(x,y))
+		return hellinger_distance
+
+	def calculate_pearson(self, real_data, fake_data):
+		real_data_sum = real_data.sum(axis = 1) 
+		real_data = real_data[real_data_sum != 0,:]
+		fake_data_sum = fake_data.sum(axis = 1) 
+		fake_data = fake_data[fake_data_sum != 0,:]
 		x = np.average(fake_data, axis = 0)
 		y = np.average(real_data, axis = 0)
 		m, b, r_value, p_value, std_err = stats.linregress(x, y)
 
-		return r_value ** 2
+		return r_value 
 
 	def calculate_r_square_var(self, real_data, fake_data):
 		x = np.var(fake_data, axis = 0)
@@ -251,6 +439,32 @@ class fidscore:
 
 		return r_value ** 2
 
+	def calculate_Hellinger_by_gene(self,real_data,fake_data):
+		assert (real_data.shape[1]==fake_data.shape[1])
+		real_data_sum = real_data.sum(axis = 1) 
+		real_data = real_data[real_data_sum != 0,:]
+
+		fake_data_sum = fake_data.sum(axis = 1) 
+		fake_data = fake_data[fake_data_sum != 0,:]
+        
+		fake_data_var = np.var(fake_data,axis = 0)
+		real_data_var = np.var(real_data,axis = 0)
+		non_zero_var_col = np.where((real_data_var > 1e-6) & (fake_data_var > 1e-6))[0]      
+		real_data = real_data[:,non_zero_var_col]
+		fake_data = fake_data[:,non_zero_var_col]
+		if real_data.shape[1] == 0 or fake_data.shape[1] == 0:
+			return(1.5)
+		else:       
+			sum_dis = 0
+			for i in range(real_data.shape[1]):
+				real_sub = real_data[:,i]
+				fake_sub = fake_data[:,i]
+				bh_coef = bhatta_coef(real_sub ,fake_sub)
+				if bh_coef>=1:
+					continue     
+				sum_dis += sqrt(1 - bh_coef)
+         
+			return(sum_dis/real_data.shape[1])
 
 class fidscore_scvi_extend(fidscore):
 	"""
@@ -446,7 +660,7 @@ class RandomForestError:
 		self.cat_rf_gt_s = self.cat_rf_gt[self.index_shuffle_mo]
 
 		
-		kf = KFold(n_splits = self.n_folds, random_state = 42)
+		kf = KFold(n_splits = self.n_folds, random_state = 42,shuffle=True)
 
 		kf_cat_gt = kf.split(self.cat_rf_gt_s)
 		self.train_in = np.array([])
@@ -972,6 +1186,8 @@ class ConcatDatasetWithIndices(torch.utils.data.Dataset):
 class SaveEvaluationResults:
 	"""
 	saving evaluation results
+   
+   RF value and PCA  may be ignored
 	"""
 	def __init__(self, method_d, method_r):
 
@@ -980,15 +1196,17 @@ class SaveEvaluationResults:
 		self.method_d = method_d
 		self.method_r = method_r
 		self.r2_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'r2-' + method_d: [], 'r2-' + method_r:[]})
+		self.r2pear_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'r2-' + method_d: [], 'r2-' + method_r:[]})
 		self.fid_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'fid-' + method_d: [], 'fid-' + method_r:[]})
-		self.rf_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'rf-' + method_d: [], 'rf-' + method_r:[]})
+		#self.rf_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'rf-' + method_d: [], 'rf-' + method_r:[]})
 		self.fid_scvi_distance_z_mu = pd.DataFrame({'scheme':[], 'n':[], 'fid-' + method_d: [], 'fid-' + method_r:[]})
 		self.fid_scvi_distance_z_sample = pd.DataFrame({'scheme':[], 'n':[], 'fid-' + method_d: [], 'fid-' + method_r:[]})
 
 	def update(self, trt_type, n_sample, 
 			   r2_value_d, r2_value_r, 
+			   r2pear_value_d, r2pear_value_r,
 			   fid_value_d, fid_value_r, 
-			   errors_d, errors_r, 
+#			   errors_d, errors_r, 
 			   fid_value_d_scvi_sample, fid_value_r_scvi_sample, 
 			   fid_value_d_scvi_mu, fid_value_r_scvi_mu):
 
@@ -996,9 +1214,12 @@ class SaveEvaluationResults:
 
 		self.r2_distance_z = pd.concat([self.r2_distance_z, pd.DataFrame([[trt_type, n_sample, r2_value_d, r2_value_r]], 
 			columns = ['scheme', 'n'] + ['r2-' + m for m in methods_dr])])
-		self.rf_distance_z = pd.concat([self.rf_distance_z, pd.DataFrame([[trt_type, n_sample, errors_d, errors_r]], 
-			columns = ['scheme', 'n'] + ['rf-' + m for m in methods_dr])])
-		
+		self.r2pear_distance_z = pd.concat([self.r2pear_distance_z, pd.DataFrame([[trt_type, n_sample, r2pear_value_d, r2pear_value_r]], 
+			columns = ['scheme', 'n'] + ['r2-' + m for m in methods_dr])])
+        
+		#self.rf_distance_z = pd.concat([self.rf_distance_z, pd.DataFrame([[trt_type, n_sample, errors_d, errors_r]], 
+#			columns = ['scheme', 'n'] + ['rf-' + m for m in methods_dr])])
+
 		self.fid_distance_z = pd.concat([self.fid_distance_z, pd.DataFrame([[trt_type, n_sample, fid_value_d, fid_value_r]], 
 			columns = ['scheme', 'n'] + ['fid-' + m for m in methods_dr])])
 		self.fid_scvi_distance_z_mu = pd.concat([self.fid_scvi_distance_z_mu, pd.DataFrame([[trt_type, n_sample, fid_value_d_scvi_mu, fid_value_r_scvi_mu]], 
@@ -1012,10 +1233,156 @@ class SaveEvaluationResults:
 			indice_end = self.r2_distance_z.shape[0]
 
 		self.r2_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_r2_distance_z.csv"))
-		self.rf_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_rf_distance_z.csv"))
-		
+		self.r2pear_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_r2pear_distance_z.csv"))
+		#self.rf_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_rf_distance_z.csv"))
+
+		self.fid_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_fid_distance_z.csv"))
+		self.fid_scvi_distance_z_mu.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_fid_distance_z_scvi_mu.csv"))
+		self.fid_scvi_distance_z_sample.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_fid_distance_z_scvi_sample.csv"))
+        
+        
+
+
+class SaveEvaluationResults_DEG_Extra:
+	"""
+	saving evaluation results
+   
+   RF value and PCA  may be ignored
+	"""
+	def __init__(self, method_d, method_r):
+
+		super().__init__()
+
+		self.method_d = method_d
+		self.method_r = method_r
+        
+		self.r2_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'r2-' + method_d: [], 'r2-' + method_r:[]})
+		self.r2pear_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'r-' + method_d: [], 'r-' + method_r:[]})
+        
+		self.fid_distance_z = pd.DataFrame({'scheme':[], 'n':[], 'fid-' + method_d: [], 'fid-' + method_r:[]})
+		self.fid_scvi_distance_z_mu = pd.DataFrame({'scheme':[], 'n':[], 'fid-' + method_d: [], 'fid-' + method_r:[]})
+		self.fid_scvi_distance_z_sample = pd.DataFrame({'scheme':[], 'n':[], 'fid-' + method_d: [], 'fid-' + method_r:[]})
+        
+		self.r2_deg_z = pd.DataFrame({'scheme':[], 'n':[], 'r2-' + method_d: [], 'r2-' + method_r:[]})
+		self.r2pear_deg_z = pd.DataFrame({'scheme':[], 'n':[], 'r2-' + method_d: [], 'r2-' + method_r:[]})        
+    
+
+	def update(self, trt_type, n_sample, 
+			   r2_value_d, r2_value_r, 
+			   r2pear_value_d, r2pear_value_r,
+			   fid_value_d, fid_value_r, 
+			   fid_value_d_scvi_sample, fid_value_r_scvi_sample, 
+			   fid_value_d_scvi_mu, fid_value_r_scvi_mu,
+			   r2_deg_d, r2_deg_r,
+			   r2pear_deg_d, r2pear_deg_r,):
+
+		methods_dr = [self.method_d, self.method_r]
+
+		self.r2_distance_z = pd.concat([self.r2_distance_z, pd.DataFrame([[trt_type, n_sample, r2_value_d, r2_value_r]], 
+			columns = ['scheme', 'n'] + ['r2-' + m for m in methods_dr])])
+        
+		self.r2pear_distance_z = pd.concat([self.r2pear_distance_z, pd.DataFrame([[trt_type, n_sample, r2pear_value_d, r2pear_value_r]], 
+			columns = ['scheme', 'n'] + ['r2-' + m for m in methods_dr])])
+        
+		#self.rf_distance_z = pd.concat([self.rf_distance_z, pd.DataFrame([[trt_type, n_sample, errors_d, errors_r]], 
+#			columns = ['scheme', 'n'] + ['rf-' + m for m in methods_dr])])
+
+		self.fid_distance_z = pd.concat([self.fid_distance_z, pd.DataFrame([[trt_type, n_sample, fid_value_d, fid_value_r]], 
+			columns = ['scheme', 'n'] + ['fid-' + m for m in methods_dr])])
+    
+		self.fid_scvi_distance_z_mu = pd.concat([self.fid_scvi_distance_z_mu, pd.DataFrame([[trt_type, n_sample, fid_value_d_scvi_mu, fid_value_r_scvi_mu]],                                                                                     			columns = ['scheme', 'n'] + ['fid-' + m for m in methods_dr])])
+        
+		self.fid_scvi_distance_z_sample = pd.concat([self.fid_scvi_distance_z_sample, pd.DataFrame([[trt_type, n_sample, fid_value_d_scvi_sample, fid_value_r_scvi_sample]], 
+			columns = ['scheme', 'n'] + ['fid-' + m for m in methods_dr])])
+        
+        
+		self.r2_deg_z = pd.concat([self.r2_deg_z, pd.DataFrame([[trt_type, n_sample, r2_deg_d, r2_deg_r]], 
+			columns = ['scheme', 'n'] + ['r2-' + m for m in methods_dr])])
+
+		self.r2pear_deg_z = pd.concat([self.r2pear_deg_z, pd.DataFrame([[trt_type, n_sample, r2pear_deg_d, r2pear_deg_r]], 
+			columns = ['scheme', 'n'] + ['r2-' + m for m in methods_dr])])
+ 
+        
+	def saveToCSV(self, path_save, file_save, indice_start = 0, indice_end = None):
+
+		if indice_end is None:
+			indice_end = self.r2_distance_z.shape[0]
+
+		self.r2_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_r2_distance_z.csv"))
+		self.r2pear_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_r2pear_distance_z.csv"))
+		#self.rf_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_rf_distance_z.csv"))
+
 		self.fid_distance_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_fid_distance_z.csv"))
 		self.fid_scvi_distance_z_mu.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_fid_distance_z_scvi_mu.csv"))
 		self.fid_scvi_distance_z_sample.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_fid_distance_z_scvi_sample.csv"))
 
+		self.r2_deg_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_r2_DEG_z.csv"))
+		self.r2pear_deg_z.iloc[indice_start:indice_end, :].to_csv(os.path.join(path_save, file_save + "_r2pear_DEG_z.csv"))
+        
+def generate_SEA_files(adata,pred_dict, save_path, model_name,sep_dir = True, single_clear = True):
+	if single_clear:
+		save_path += "single/"
+	for trt, decoded_smiles in pred_dict.items():
+		name = adata.obs[adata.obs["perturb_string"] == trt]["product_name"].unique()[0]
+		pert = adata.obs[adata.obs["perturb_string"] == trt]["treatment"].unique()[0]
+		single_clear_flag = adata.obs[adata.obs["perturb_string"] == trt]["single_clear_target_flag"].unique()[0]
+		target_list = adata.obs[adata.obs["perturb_string"] == trt]["target"].unique()[0].split(",")
+		name = name.split()[0] + "_" + model_name +"_" + pert + "_"
+		name_list = [name  + str(i) for i in range(len(decoded_smiles))]
+		if single_clear and not single_clear_flag:
+			continue       
+		if sep_dir:
+			save_path_dir = save_path + pert + "/"
+		else:
+			save_path_dir  = save_path
+            
+		if not os.path.exists(save_path_dir):
+			os.makedirs(save_path_dir, exist_ok = True)
+		count = 0
+		for target in target_list:
+			count += 1
+			target_array = np.repeat(target,len(decoded_smiles))
+			df = pd.DataFrame({"target": target_array, "smiles":decoded_smiles, "name":name_list})
+			df.to_csv(save_path_dir + pert + "_target" + str(count) + "_query.txt", header = False, index = False, sep = "\t")
+        
+def tanimoto_calc_mol(mol1, mol2):
+	fp1 = AllChem.GetMorganFingerprintAsBitVect(mol1, 3, nBits=2048)
+	fp2 = AllChem.GetMorganFingerprintAsBitVect(mol2, 3, nBits=2048)
+	s = round(DataStructs.TanimotoSimilarity(fp1,fp2),3)
+	return s 
 
+def evaluate_smiles(adata,pred_dict):
+	pert_list = []
+	smiles_list = []
+	target_list = []
+	prod_list = []
+	mean_sim_list = []
+	max_sim_list = []
+	mean_qed_list = []
+	raw_qed_list = []
+	for trt, decoded_smiles in pred_dict.items():
+		name = adata.obs[adata.obs["perturb_string"] == trt]["product_name"].unique()[0]
+		pert = adata.obs[adata.obs["perturb_string"] == trt]["treatment"].unique()[0]
+		target = adata.obs[adata.obs["perturb_string"] == trt]["target"].unique()[0]
+		trt_mol = Chem.MolFromSmiles(trt)
+		tani_coef = []
+		qed_pred = []
+		for i in decoded_smiles:
+			pred_mol = Chem.MolFromSmiles(i)
+			tani_coef.append(tanimoto_calc_mol(trt_mol,pred_mol))
+			qed_pred.append(Chem.QED.qed(pred_mol))
+		pert_list.append(pert)
+		prod_list.append(name)
+		target_list.append(target)
+		smiles_list.append(trt)
+		mean_sim_list.append(np.mean(tani_coef))
+		max_sim_list.append(max(tani_coef))
+		mean_qed_list.append(np.mean(qed_pred))
+		raw_qed_list.append(Chem.QED.qed(trt_mol))
+	df = pd.DataFrame({"treatment":pert_list, "drug_name":prod_list,"target":target_list,
+                        "smiles":smiles_list, "mean_sim": mean_sim_list, "max_sim":max_sim_list,
+                          "mean_qed":mean_qed_list, "raw_qed":raw_qed_list})
+    
+	return df
+    
+        
