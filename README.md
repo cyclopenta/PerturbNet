@@ -18,7 +18,7 @@ Some related module versions are:
 (8) torch: 1.10.0
 (9) umap-learn: 0.4.6
 ```
-
+The new detailed requirements is in environment.yml
 ## Repository Structure and Usage
 
 [`./net2net`](https://github.com/welch-lab/PerturbNet/tree/main/net2net) contains the conditional invertible neural network (cINN) modules in the [GitHub](https://github.com/CompVis/net2net/tree/master/net2net) repository of [Network-to-Network Translation with Conditional Invertible Neural Networks](https://arxiv.org/abs/2005.13580). 
