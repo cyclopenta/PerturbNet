@@ -507,6 +507,23 @@ def umapPlot_latent_check(real_latent, fake_latent, path_file_save = None):
     return chart_pr
 
 
+def boxplot_metrics(model_dict, metric_key, path_file_save = None):
+    
+    shared_cols = ["perturbation", metric_key]
+    df_list = []
+    for model, results in model_dict.items():
+        results = results[shared_cols]
+        results["model"] = np.repeat(model,results.shape[0])
+        df_list.append(results)
+    df = pd.concat(df_list, ignore_index=True)
+    
+    chart_pr = ggplot(df, aes(x= "model", y= metric_key, fill = "model") ) \
+    + geom_boxplot() \
+
+    if path_file_save is not None:
+        chart_pr.save(path_file_save, width=12, height=8, dpi=144)
+    return chart_pr
+
 def contourplot_prepare_embeddings(adata, Lsample_obs, perturbnet_model, highlight, 
                                    trt_key = "ordered_all_trt", embed_key = "ordered_all_embedding", 
                                    n_cell = 50, random_seed = 42):
