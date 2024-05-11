@@ -154,7 +154,337 @@ def predict_perturbation_protein(perturbnet_model, perturbation_embeddings, libr
     
     return fake_latent, fake_data, trt_onehot
 
+def evaluation_metrics_PerturbNet_not_use(adata, perturbnet_model,library_latent, perturbation_key, 
+                       trt_key = "ordered_all_trt", embed_key = "ordered_all_embedding",
+                       Rsquare = True, Pearson = True, Hellinger = True, gene_set = ["all", "deg", "leg"], 
+                       random_seed = 42, n_cell = None):
+    if sparse.issparse(adata.X):
+        usedata = adata.X.A
+    else:
+        usedata = adata.X
+    if sparse.issparse(adata.layers["counts"]):
+        usedata_count = adata.layers["counts"].A
+    else:
+        usedata_count = adata.layers["counts"]
+    normModel = NormalizedRevisionRSquare(largeCountData = usedata_count)
+    normModelVar = NormalizedRevisionRSquareVar(norm_model=normModel)
+    adata.var["gene_idx"] = np.arange(0,adata.var.shape[0],1)
+    perturb = []
+    ncell = []
+    n_large = []
+    r2 = []
+    r2_deg = []
+    r2_large = []
+    pear = []
+    pear_deg = []
+    pear_large = []
+    hd = []
+    hd_deg = []
+    hd_large = []
+    np.random.seed(random_seed)
+    trt_unseen_list = adata.obs[perturbation_key].unique()
+    perturb_with_onehot_removed = adata.obs[perturbation_key]
+    for indice_trt in tqdm(range(len(trt_unseen_list))):
+        trt_type = trt_unseen_list[indice_trt]
+        pert = trt_type
+        pert_idx = np.where(adata.uns[trt_key] == pert)[0][0]
+        pert_embed = adata.uns[embed_key][pert_idx]
 
+        idx_trt_type = np.where(perturb_with_onehot_removed == trt_type)[0]
+        if idx_trt_type.shape[0] > 1000:
+            idx_trt_type  =  np.random.choice(idx_trt_type, 1000, replace = False)
+        if n_cell:
+            _, fake_data,_ = predict_perturbation_protein(perturbnet_model, pert_embed, library_latent, n_cell = 100, random_seed = random_seed)
+        else:
+            n_cell = idx_trt_type.shape[0]
+            _, fake_data,_ = predict_perturbation_protein(perturbnet_model, pert_embed, library_latent, n_cell = 100, random_seed = random_seed)
+        DEG_gene = adata.uns["rank_genes_groups"]["names"][trt_type]
+        DEG_idx = np.array(adata.var.loc[DEG_gene]["gene_idx"])
+        real_data = usedata_count[idx_trt_type]
+        r2_value, real_norm, rfake_norm = normModel.calculate_r_square(real_data, fake_data)
+        pear_value = normModel.calculate_pearson(real_data, fake_data)
+        hd_value = normModel.calculate_Hellinger_by_gene(real_data,fake_data)
+
+
+        real_data_deg = real_data[:,DEG_idx]
+        fake_data_deg = fake_data[:,DEG_idx]
+
+
+        r2_deg_value,_,_ = normModel.calculate_r_square(real_data_deg, fake_data_deg)
+        pear_deg_value = normModel.calculate_pearson(real_data_deg, fake_data_deg)
+        hd_deg_value =  normModel.calculate_Hellinger_by_gene(real_data_deg,fake_data_deg)
+   
+        large_effect_idx =   DEG_idx[abs(adata.uns["rank_genes_groups"]["logfoldchanges"][pert])>=1]
+        num_large =  sum(abs(adata.uns["rank_genes_groups"]["logfoldchanges"][pert])>=1)
+    
+        if num_large <=1:
+            hd_large_value = 1.5
+            r2_large_value = 1.5
+            pear_large_value = 1.5
+        else:
+            real_data_large = real_data[:,large_effect_idx ]
+            fake_data_large = fake_data[:,large_effect_idx ]
+            hd_large_value = fidscore_cal.calculate_Hellinger_by_gene(real_data_large, fake_data_large)
+            r2_large_value,_ ,_  = normModel.calculate_r_square(real_data_large, fake_data_large)
+            pear_large_value = normModel.calculate_pearson(real_data_large, fake_data_large)
+        
+
+        perturb.append(pert)
+        ncell.append(len(idx_trt_type))
+        n_large.append(num_large)
+        r2.append(r2_value)
+        r2_deg.append(r2_deg_value)
+        r2_large.append(r2_large_value)
+        pear.append(pear_value)
+        pear_deg.append(pear_deg_value)
+        pear_large.append(pear_large_value)
+        hd.append(hd_value)
+        hd_deg.append(hd_deg_value)
+        hd_large.append(hd_large_value)
+    
+    results = pd.DataFrame({"perturbation":perturb, "number_real_cells_used":ncell,"n_large":n_large,
+                        "r2":r2,"pear":pear, "hd":hd,
+                        "r2_deg":r2_deg, "pear_deg":pear_deg, "hd_deg":hd_deg,
+                        "r2_large":r2_large, "pear_large": pear_large,"hd_large":hd_large
+                       })
+    return(results)
+                                                
+def evaluation_metrics_PerturbNet(adata, perturbnet_model, library_latent, perturbation_key,
+                                  trt_key="ordered_all_trt", embed_key="ordered_all_embedding",
+                                  calc_rsquare=True, calc_pearson=True, calc_hellinger=True,
+                                  calc_deg=True, calc_large_effect=True,
+                                  random_seed=42, n_cell=None):
+    if sparse.issparse(adata.X):
+        usedata = adata.X.A
+    else:
+        usedata = adata.X
+    if sparse.issparse(adata.layers["counts"]):
+        usedata_count = adata.layers["counts"].A
+    else:
+        usedata_count = adata.layers["counts"]
+    
+    normModel = NormalizedRevisionRSquare(largeCountData=usedata_count)
+    adata.var["gene_idx"] = np.arange(adata.var.shape[0])
+
+    results = []
+    np.random.seed(random_seed)
+    trt_unseen_list = adata.obs[perturbation_key].unique()
+
+    for trt_type in trt_unseen_list:
+        pert_idx = np.where(adata.uns[trt_key] == trt_type)[0][0]
+        pert_embed = adata.uns[embed_key][pert_idx]
+        idx_trt_type = np.where(adata.obs[perturbation_key] == trt_type)[0]
+
+        if idx_trt_type.shape[0] > 1000:
+            idx_trt_type = np.random.choice(idx_trt_type, 1000, replace=False)
+        n_cell_used = n_cell if n_cell else idx_trt_type.shape[0]
+        
+        _, fake_data, _ = predict_perturbation_protein(perturbnet_model, pert_embed, library_latent, n_cell=n_cell_used, random_seed=random_seed)
+
+        real_data = usedata_count[idx_trt_type]
+        DEG_gene = adata.uns["rank_genes_groups"]["names"][trt_type]
+        DEG_idx = np.array(adata.var.loc[DEG_gene]["gene_idx"])
+
+        row = {"perturbation": trt_type, "number_real_cells_used": len(idx_trt_type)}
+
+        if calc_rsquare:
+            r2_value, _, _ = normModel.calculate_r_square(real_data, fake_data)
+            row["r2"] = r2_value
+            if calc_deg:
+                real_data_deg = real_data[:, DEG_idx]
+                fake_data_deg = fake_data[:, DEG_idx]
+                r2_deg_value, _, _ = normModel.calculate_r_square(real_data_deg, fake_data_deg)
+                row["r2_deg"] = r2_deg_value
+
+        if calc_pearson:
+            pear_value = normModel.calculate_pearson(real_data, fake_data)
+            row["pear"] = pear_value
+            if calc_deg:
+                pear_deg_value = normModel.calculate_pearson(real_data_deg, fake_data_deg)
+                row["pear_deg"] = pear_deg_value
+
+        if calc_hellinger:
+            hd_value = normModel.calculate_Hellinger_by_gene(real_data, fake_data)
+            row["hd"] = hd_value
+            if calc_deg:
+                hd_deg_value = normModel.calculate_Hellinger_by_gene(real_data_deg, fake_data_deg)
+                row["hd_deg"] = hd_deg_value
+
+        if calc_large_effect:
+            large_effect_idx = DEG_idx[abs(adata.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1]
+            num_large = sum(abs(adata.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1)
+            if num_large <= 1:
+                pseudo_value = 1.5
+                row.update({"r2_large": pseudo_value, "pear_large": pseudo_value, "hd_large": pseudo_value})
+            else:
+                real_data_large = real_data[:, large_effect_idx]
+                fake_data_large = fake_data[:, large_effect_idx]
+                if calc_rsquare:
+                    r2_large_value, _, _ = normModel.calculate_r_square(real_data_large, fake_data_large)
+                    row["r2_large"] = r2_large_value
+                if calc_pearson:
+                    pear_large_value = normModel.calculate_pearson(real_data_large, fake_data_large)
+                    row["pear_large"] = pear_large_value
+                if calc_hellinger:
+                    hd_large_value = normModel.calculate_Hellinger_by_gene(real_data_large, fake_data_large)
+                    row["hd_large"] = hd_large_value
+
+        results.append(row)
+
+    results_df = pd.DataFrame(results)
+    return results_df
+    
+def evaluation_metrics_Random(adata_train,adata_test, perturbation_key,
+                                  trt_key="ordered_all_trt", embed_key="ordered_all_embedding",
+                                  calc_rsquare=True, calc_pearson=True, calc_hellinger=True,
+                                  calc_deg=True, calc_large_effect=True,
+                                  random_seed=42, n_cell=None):
+
+    def calculate_r_square(real_data, fake_data,norm_vec_real,norm_vec_fake):
+        real_data_norm = real_data.copy()
+        real_data_norm_sum = norm_vec_real 
+        real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+
+        fake_data_norm = fake_data.copy()
+        fake_data_norm_sum = norm_vec_fake
+        fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+
+        real_data_norm = real_data_norm /  real_data_norm_sum[:, None] * 1e4
+        fake_data_norm = fake_data_norm /  fake_data_norm_sum[:, None] * 1e4
+        real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+        # important to make sure x is y_true and y is y_pred since it will affect which y_bar to be used
+        x = np.average(real_data_norm, axis = 0)
+        y = np.average(fake_data_norm, axis = 0)
+        r2_value = r2_score(x, y)
+        return(r2_value)
+
+    def calculate_pearson(real_data, fake_data,norm_vec_real,norm_vec_fake):
+        real_data_norm = real_data.copy()
+        real_data_norm_sum = norm_vec_real 
+        real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+
+        fake_data_norm = fake_data.copy()
+        fake_data_norm_sum = norm_vec_fake
+        fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+
+        real_data_norm = real_data_norm /  real_data_norm_sum[:, None] * 1e4
+        fake_data_norm = fake_data_norm /  fake_data_norm_sum[:, None] * 1e4
+        real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+        # important to make sure x is y_true and y is y_pred since it will affect which y_bar to be used
+        x = np.average(real_data_norm, axis = 0)
+        y = np.average(fake_data_norm, axis = 0)
+        m, b, r_value, p_value, std_err = stats.linregress(x, y)
+        return(r_value)
+
+    def calculate_Hellinger_by_gene(real_data, fake_data,norm_vec_real,norm_vec_fake):
+        real_data_norm = real_data.copy()
+        real_data_norm_sum = norm_vec_real 
+        real_data_norm  = real_data_norm[real_data_norm_sum != 0,:]
+
+        fake_data_norm = fake_data.copy()
+        fake_data_norm_sum = norm_vec_fake
+        fake_data_norm  = fake_data_norm[fake_data_norm_sum != 0,:]
+
+        real_data_norm = real_data_norm / real_data_norm_sum[:, None] * 1e4
+        fake_data_norm = fake_data_norm /  fake_data_norm_sum[:, None] * 1e4
+        real_data_norm, fake_data_norm = np.log1p(real_data_norm), np.log1p(fake_data_norm)
+    
+        fake_data_var = np.var(real_data_norm,axis = 0)
+        real_data_var = np.var(fake_data_norm,axis = 0)
+        non_zero_var_col = np.where((real_data_var > 1e-6) & (fake_data_var > 1e-6))[0]     
+        real_data_norm = real_data_norm[:,non_zero_var_col]
+        fake_data_norm = fake_data_norm[:,non_zero_var_col]      
+        sum_dis = 0
+        for i in range(real_data_norm.shape[1]):
+            real_sub = real_data_norm[:,i]
+            fake_sub = fake_data_norm[:,i]
+            bh_coef = bhatta_coef(real_sub ,fake_sub)
+            if bh_coef>=1:
+                continue
+            sum_dis += sqrt(1 - bh_coef)
+        return(sum_dis/real_data.shape[1])
+
+    adata_test.var["gene_idx"] = np.arange(adata_test.var.shape[0])
+
+    results = []
+    np.random.seed(random_seed)
+    trt_unseen_list = adata_test.obs[perturbation_key].unique()
+
+    for trt_type in trt_unseen_list:
+
+        
+        
+        seen_data = adata_train.layers["counts"].A
+        seen_data_idx = list(range(seen_data.shape[0]))
+        
+        real_data_idx = adata_test.obs[adata_test.obs["variant_seq"] == trt_type].index
+        if real_data_idx.shape[0] > 1000:
+            real_data_idx = np.random.choice(real_data_idx, 1000, replace = False)
+    
+        real_data = adata_test[real_data_idx, :].copy().layers["counts"].A
+        norm_vec_real = adata_test[real_data_idx, :].obs["n_counts_total"].to_numpy()
+        
+        n_cell_used = n_cell if n_cell else real_data.shape[0]
+        
+        idx_rsample = np.random.choice(seen_data_idx, n_cell_used, replace=True)
+        fake_data = seen_data[idx_rsample]
+        norm_vec_fake = adata_train.obs["n_counts_total"].to_numpy()[idx_rsample]
+
+        DEG_gene = adata_test.uns["rank_genes_groups"]["names"][trt_type]
+        DEG_idx = np.array(adata_test.var.loc[DEG_gene]["gene_idx"])
+
+        row = {"perturbation": trt_type, "number_real_cells_used": len(real_data_idx)}
+
+        if calc_rsquare:
+            r2_value = calculate_r_square(real_data, fake_data, norm_vec_real,norm_vec_fake)
+            row["r2"] = r2_value
+            if calc_deg:
+                real_data_deg = real_data[:, DEG_idx]
+                fake_data_deg = fake_data[:, DEG_idx]
+                r2_deg_value = calculate_r_square(real_data_deg, fake_data_deg, norm_vec_real,norm_vec_fake)
+                row["r2_deg"] = r2_deg_value
+
+        if calc_pearson:
+            pear_value = calculate_pearson(real_data, fake_data, norm_vec_real,norm_vec_fake)
+            row["pear"] = pear_value
+            if calc_deg:
+                pear_deg_value = calculate_pearson(real_data_deg, fake_data_deg, norm_vec_real,norm_vec_fake)
+                row["pear_deg"] = pear_deg_value
+
+        if calc_hellinger:
+            hd_value = calculate_Hellinger_by_gene(real_data, fake_data, norm_vec_real, norm_vec_fake)
+            row["hd"] = hd_value
+            if calc_deg:
+                hd_deg_value = calculate_Hellinger_by_gene(real_data_deg, fake_data_deg, norm_vec_real,norm_vec_fake)
+                row["hd_deg"] = hd_deg_value
+
+        if calc_large_effect:
+            large_effect_idx = DEG_idx[abs(adata_test.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1]
+            num_large = sum(abs(adata_test.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1)
+            if num_large <= 1:
+                pseudo_value = 1.5
+                row.update({"r2_large": pseudo_value, "pear_large": pseudo_value, "hd_large": pseudo_value})
+            else:
+                real_data_large = real_data[:, large_effect_idx]
+                fake_data_large = fake_data[:, large_effect_idx]
+                if calc_rsquare:
+                    r2_large_value = calculate_r_square(real_data_large, fake_data_large, norm_vec_real,norm_vec_fake)
+                    row["r2_large"] = r2_large_value
+                if calc_pearson:
+                    pear_large_value = calculate_pearson(real_data_large, fake_data_large, norm_vec_real,norm_vec_fake)
+                    row["pear_large"] = pear_large_value
+                if calc_hellinger:
+                    hd_large_value = calculate_Hellinger_by_gene(real_data_large, fake_data_large, norm_vec_real,norm_vec_fake)
+                    row["hd_large"] = hd_large_value
+
+        results.append(row)
+
+    results_df = pd.DataFrame(results)
+    return results_df
+
+#####################################
+# PLOT FUNCTION
+######################################
 def umapPlot_latent_check(real_latent, fake_latent, path_file_save = None):
     all_latent = np.concatenate([fake_latent, real_latent], axis = 0)
     cat_t = ["Real"] * real_latent.shape[0]
@@ -175,6 +505,36 @@ def umapPlot_latent_check(real_latent, fake_latent, path_file_save = None):
     if path_file_save is not None:
         chart_pr.save(path_file_save, width=12, height=8, dpi=144)
     return chart_pr
+
+
+def contourplot_prepare_embeddings(adata, Lsample_obs, perturbnet_model, highlight, 
+                                   trt_key = "ordered_all_trt", embed_key = "ordered_all_embedding", 
+                                   n_cell = 50, random_seed = 42):
+    background_pert = []
+    background_cell = []
+    
+    for mut in adata.obs.mutation_name.unique():
+        if mut == highlight:
+            continue
+        
+        pert = adata.obs[adata.obs.mutation_name == mut]["variant_seq"].unique()[0]
+        pert_idx = np.where(adata.uns[trt_key] == pert)[0][0]
+        pert_embed = adata.uns[embed_key][pert_idx]
+        fake_cell_latent_background, _, fake_pert_latent_background = predict_perturbation_protein(
+            perturbnet_model,
+            perturbation_embeddings=pert_embed,
+            library_latent=Lsample_obs,
+            n_cell=n_cell,
+            random_seed=random_seed
+        )
+        
+        background_pert.append(fake_pert_latent_background)
+        background_cell.append(fake_cell_latent_background)
+    
+    background_pert = np.concatenate(background_pert)
+    background_cell = np.concatenate(background_cell)
+    
+    return background_pert, background_cell
 
 def contourplot_space_mapping_pca(embeddings_cell, embeddings_pert, background_pert, background_cell, highlight_label,
                                   random_state=42, n_pcs=50, bandwidth=0.2):
