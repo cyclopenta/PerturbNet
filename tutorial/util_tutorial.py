@@ -313,21 +313,26 @@ def evaluation_metrics_PerturbNet(adata, perturbnet_model, library_latent, pertu
         if calc_large_effect:
             large_effect_idx = DEG_idx[abs(adata.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1]
             num_large = sum(abs(adata.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1)
-            if num_large <= 1:
-                pseudo_value = 1.5
-                row.update({"r2_large": pseudo_value, "pear_large": pseudo_value, "hd_large": pseudo_value})
-            else:
-                real_data_large = real_data[:, large_effect_idx]
-                fake_data_large = fake_data[:, large_effect_idx]
-                if calc_rsquare:
+            real_data_large = real_data[:, large_effect_idx]
+            fake_data_large = fake_data[:, large_effect_idx]
+            if calc_rsquare:
+                if num_large <= 1:
+                    r2_large_value = 1.5
+                else:
                     r2_large_value, _, _ = normModel.calculate_r_square(real_data_large, fake_data_large)
-                    row["r2_large"] = r2_large_value
-                if calc_pearson:
+                row["r2_large"] = r2_large_value
+            if calc_pearson:
+                if num_large <= 1:
+                    pear_large_value = 1.5
+                else:
                     pear_large_value = normModel.calculate_pearson(real_data_large, fake_data_large)
-                    row["pear_large"] = pear_large_value
-                if calc_hellinger:
+                row["pear_large"] = pear_large_value
+            if calc_hellinger:
+                if num_large <= 1:
+                    hd_large_value = 1.5
+                else:
                     hd_large_value = normModel.calculate_Hellinger_by_gene(real_data_large, fake_data_large)
-                    row["hd_large"] = hd_large_value
+                row["hd_large"] = hd_large_value
 
         results.append(row)
 
@@ -461,21 +466,26 @@ def evaluation_metrics_Random(adata_train,adata_test, perturbation_key,
         if calc_large_effect:
             large_effect_idx = DEG_idx[abs(adata_test.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1]
             num_large = sum(abs(adata_test.uns["rank_genes_groups"]["logfoldchanges"][trt_type]) >= 1)
-            if num_large <= 1:
-                pseudo_value = 1.5
-                row.update({"r2_large": pseudo_value, "pear_large": pseudo_value, "hd_large": pseudo_value})
-            else:
-                real_data_large = real_data[:, large_effect_idx]
-                fake_data_large = fake_data[:, large_effect_idx]
-                if calc_rsquare:
+            real_data_large = real_data[:, large_effect_idx]
+            fake_data_large = fake_data[:, large_effect_idx]
+            if calc_rsquare:
+                if num_large <= 1:
+                    r2_large_value = 1.5
+                else:
                     r2_large_value = calculate_r_square(real_data_large, fake_data_large, norm_vec_real,norm_vec_fake)
-                    row["r2_large"] = r2_large_value
-                if calc_pearson:
+                row["r2_large"] = r2_large_value
+            if calc_pearson:
+                if num_large <= 1:
+                    pear_large_value = 1.5
+                else:
                     pear_large_value = calculate_pearson(real_data_large, fake_data_large, norm_vec_real,norm_vec_fake)
-                    row["pear_large"] = pear_large_value
-                if calc_hellinger:
+                row["pear_large"] = pear_large_value
+            if calc_hellinger:
+                if num_large <= 1:
+                    hd_large_value = 1.5
+                else:
                     hd_large_value = calculate_Hellinger_by_gene(real_data_large, fake_data_large, norm_vec_real,norm_vec_fake)
-                    row["hd_large"] = hd_large_value
+                row["hd_large"] = hd_large_value
 
         results.append(row)
 
@@ -562,6 +572,76 @@ def contourplot_space_mapping_pca(embeddings_cell, embeddings_pert, background_p
     # Concatenate embeddings after PCA
     embeddings_cell_all = np.concatenate([background_cell, embeddings_cell])
     embeddings_pert_all = pert_pca
+
+    # Labels for plotting
+    cat_pert = ["Other"] * background_pert.shape[0] + [highlight_label] * embeddings_pert.shape[0]
+    cat_cell = ["Other"] * background_cell.shape[0] + [highlight_label] * embeddings_cell.shape[0]
+
+    # Create UMAP transformers and transform data
+    trans_pert = umap.UMAP(random_state=random_state, min_dist=0.5, n_neighbors=30).fit(embeddings_pert_all)
+    trans_cell = umap.UMAP(random_state=random_state, min_dist=0.5, n_neighbors=30).fit(embeddings_cell_all)
+    Y_embedded = trans_pert.transform(embeddings_pert_all)
+    Z_embedded = trans_cell.transform(embeddings_cell_all)
+
+    fig = plt.figure(figsize=(12, 6))
+
+    ax1 = plt.subplot(121)
+    ax2 = plt.subplot(122)
+
+    # Define a plotting function for each subplot
+    def plot_with_contours(ax, data, categories, title, highlight, add_contour = True):
+        highlight_data = data[categories == highlight]
+        other_data = data[categories != highlight]
+
+        # Plot background data
+        ax.scatter(other_data[:, 0], other_data[:, 1], color='gray', s=1, label='Other')
+
+        # Plot highlight data
+        ax.scatter(highlight_data[:, 0], highlight_data[:, 1], color='red', s=1, label=highlight_label)
+
+        if add_contour and highlight_data.size > 0:
+            x_min, x_max = np.min(data[:, 0]), np.max(data[:, 0])
+            y_min, y_max = np.min(data[:, 1]), np.max(data[:, 1])
+            x_grid = np.linspace(x_min, x_max, 100)
+            y_grid = np.linspace(y_min, y_max, 100)
+            X, Y = np.meshgrid(x_grid, y_grid)
+            kde = gaussian_kde(highlight_data.T, bw_method=bandwidth)
+            Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
+            ax.contour(X, Y, Z, levels=5, colors='red')
+        
+        ax.set_xlim(np.min(data[:, 0]), np.max(data[:, 0]))
+        ax.set_ylim(np.min(data[:, 1]), np.max(data[:, 1]))
+        ax.set_title(title)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # Plotting for each representation
+    plot_with_contours(ax1, Y_embedded, np.array(cat_pert), 'Perturbation Representation', highlight_label, add_contour = False)
+    plot_with_contours(ax2, Z_embedded, np.array(cat_cell), 'Cellular Representation', highlight_label)
+
+    # Draw lines for highlighted points
+    transFigure = fig.transFigure.inverted()
+    highlight_indices = np.where(np.array(cat_pert) == highlight_label)[0]
+    if len(highlight_indices) > 30:
+        highlight_indices = np.random.choice(highlight_indices, 30, replace=False)  # Randomly pick 30 indices
+
+    for index in highlight_indices:
+        xy1 = transFigure.transform(ax1.transData.transform(Y_embedded[index]))
+        xy2 = transFigure.transform(ax2.transData.transform(Z_embedded[index]))
+        line = matplotlib.lines.Line2D((xy1[0], xy2[0]), (xy1[1], xy2[1]), transform=fig.transFigure, color='red', linewidth=0.5)
+        fig.lines.append(line)
+
+    # Place a legend
+    handles, labels = ax1.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', ncol=3)
+    plt.show()
+    
+    
+def contourplot_space_mapping(embeddings_cell, embeddings_pert, background_pert, background_cell, highlight_label,
+                                  random_state=42, bandwidth=0.2):
+    # Concatenate embeddings after PCA
+    embeddings_cell_all = np.concatenate([background_cell, embeddings_cell])
+    embeddings_pert_all = np.concatenate([background_pert, embeddings_pert])
 
     # Labels for plotting
     cat_pert = ["Other"] * background_pert.shape[0] + [highlight_label] * embeddings_pert.shape[0]
